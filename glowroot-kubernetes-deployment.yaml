@@ -1,0 +1,386 @@
+---
+# Glowroot APM Kubernetes Deployment
+# Namespace oluşturma
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: glowroot-apm
+  labels:
+    name: glowroot-apm
+    environment: test
+---
+# ConfigMap - Glowroot konfigürasyonu
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glowroot-config
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: config
+data:
+  # Glowroot admin.json konfigürasyonu
+  admin.json: |
+    {
+      "web": {
+        "bindAddress": "0.0.0.0",
+        "port": 4000,
+        "contextPath": "/glowroot"
+      },
+      "ui": {
+        "defaultDisplayedPercentiles": [50, 95, 99],
+        "defaultDisplayedTransactionType": "Web"
+      },
+      "storage": {
+        "rollupExpirationHours": [
+          {"captureTime": 0, "expirationHours": 4},
+          {"captureTime": 4, "expirationHours": 24},
+          {"captureTime": 24, "expirationHours": 24 * 7},
+          {"captureTime": 24 * 7, "expirationHours": 24 * 30},
+          {"captureTime": 24 * 30, "expirationHours": 24 * 90}
+        ],
+        "queryCache": {
+          "maxSize": 1000,
+          "expireAfterWrite": "PT5m"
+        }
+      },
+      "advanced": {
+        "weavingTimer": "nanosecond",
+        "immediatePartialStoreFlush": false,
+        "maxAggregateQueriesPerType": 500,
+        "maxAggregateTransactionsPerType": 500,
+        "maxTraceEntriesPerTransaction": 2000,
+        "maxStackTraceSamplesPerTransaction": 20,
+        "maxProfileSamplesPerTransaction": 50000
+      }
+    }
+  
+  # Glowroot collector.json konfigürasyonu
+  collector.json: |
+    {
+      "transactions": {
+        "slowThresholdMillis": 2000,
+        "profilingIntervalMillis": 1000,
+        "captureArgs": false,
+        "captureResult": false
+      },
+      "profiles": {
+        "slowThresholdMillis": 10000,
+        "profilingIntervalMillis": 1000
+      },
+      "gauges": {
+        "mbeanGauges": []
+      },
+      "alerts": {
+        "fromAddress": "glowroot@example.com",
+        "smtpHost": "localhost",
+        "smtpPort": 25,
+        "smtpUsername": "",
+        "smtpPassword": "",
+        "smtpEncryption": "none"
+      }
+    }
+---
+# Persistent Volume Claim - Glowroot veri depolama
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: glowroot-data-pvc
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: default
+---
+# Service Account - Glowroot için güvenlik
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glowroot-sa
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: serviceaccount
+---
+# ClusterRole - Glowroot için gerekli izinler
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: glowroot-cluster-role
+  labels:
+    app: glowroot
+    component: rbac
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+---
+# ClusterRoleBinding - Service Account'u ClusterRole ile bağlama
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: glowroot-cluster-role-binding
+  labels:
+    app: glowroot
+    component: rbac
+subjects:
+- kind: ServiceAccount
+  name: glowroot-sa
+  namespace: glowroot-apm
+roleRef:
+  kind: ClusterRole
+  name: glowroot-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Deployment - Glowroot uygulaması
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glowroot
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: glowroot
+      component: app
+  template:
+    metadata:
+      labels:
+        app: glowroot
+        component: app
+    spec:
+      serviceAccountName: glowroot-sa
+      containers:
+      - name: glowroot
+        image: glowroot/glowroot-central:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 4000
+          name: http
+          protocol: TCP
+        - containerPort: 8181
+          name: collector
+          protocol: TCP
+        env:
+        - name: GLOWROOT_OPTS
+          value: "-Xms512m -Xmx1g -XX:+UseG1GC"
+        - name: JAVA_OPTS
+          value: "-Djava.security.egd=file:/dev/./urandom"
+        volumeMounts:
+        - name: glowroot-config
+          mountPath: /opt/glowroot/conf
+          readOnly: true
+        - name: glowroot-data
+          mountPath: /opt/glowroot/data
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /glowroot
+            port: 4000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /glowroot
+            port: 4000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: glowroot-config
+        configMap:
+          name: glowroot-config
+      - name: glowroot-data
+        persistentVolumeClaim:
+          claimName: glowroot-data-pvc
+---
+# Service - Glowroot web arayüzü
+apiVersion: v1
+kind: Service
+metadata:
+  name: glowroot-web
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: web-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4000
+    targetPort: 4000
+    protocol: TCP
+    name: http
+  selector:
+    app: glowroot
+    component: app
+---
+# Service - Glowroot collector
+apiVersion: v1
+kind: Service
+metadata:
+  name: glowroot-collector
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: collector-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8181
+    targetPort: 8181
+    protocol: TCP
+    name: collector
+  selector:
+    app: glowroot
+    component: app
+---
+# Ingress - Glowroot web arayüzü erişimi
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: glowroot-ingress
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /glowroot/$2
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - glowroot.test.local
+    secretName: glowroot-tls
+  rules:
+  - host: glowroot.test.local
+    http:
+      paths:
+      - path: /glowroot(/|$)(.*)
+        pathType: Prefix
+        backend:
+          service:
+            name: glowroot-web
+            port:
+              number: 4000
+---
+# Secret - TLS sertifikası (opsiyonel)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: glowroot-tls
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: tls
+type: kubernetes.io/tls
+data:
+  # Bu değerler gerçek sertifika ile değiştirilmeli
+  tls.crt: ""
+  tls.key: ""
+---
+# HorizontalPodAutoscaler - Otomatik ölçeklendirme
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: glowroot-hpa
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: glowroot
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+---
+# NetworkPolicy - Güvenlik politikası
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: glowroot-network-policy
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: network-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: glowroot
+      component: app
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: glowroot-apm
+    ports:
+    - protocol: TCP
+      port: 4000
+    - protocol: TCP
+      port: 8181
+  - from:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 4000
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - namespaceSelector: {}
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80 
