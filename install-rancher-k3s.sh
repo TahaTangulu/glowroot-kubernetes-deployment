@@ -157,6 +157,9 @@ install_rancher() {
         --namespace cattle-system \
         --set hostname="$HOSTNAME" \
         --set bootstrapPassword=admin123 \
+        --set ingress.tls.source=rancher \
+        --set service.type=NodePort \
+        --set service.nodePort=30443 \
         --wait --timeout=10m
     
     log_success "Rancher kuruldu"
