@@ -184,6 +184,10 @@ spec:
           value: "-Djava.security.egd=file:/dev/./urandom"
         - name: CASSANDRA_CONTACT_POINTS
           value: "cassandra"
+        - name: CASSANDRA_PORT
+          value: "9042"
+        - name: CASSANDRA_KEYSPACE
+          value: "glowroot"
         volumeMounts:
         - name: glowroot-config
           mountPath: /opt/glowroot/conf
