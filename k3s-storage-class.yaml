@@ -6,17 +6,4 @@ metadata:
     storageclass.kubernetes.io/is-default-class: "true"
 provisioner: rancher.io/local-path
 volumeBindingMode: WaitForFirstConsumer
-reclaimPolicy: Delete
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: glowroot-data-pvc
-  namespace: glowroot-apm
-spec:
-  accessModes:
-    - ReadWriteOnce
-  storageClassName: local-path
-  resources:
-    requests:
-      storage: 10Gi 
+reclaimPolicy: Delete 

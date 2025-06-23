@@ -80,15 +80,13 @@ spec:
         - name: cassandra-data
           mountPath: /var/lib/cassandra
         livenessProbe:
-          httpGet:
-            path: /glowroot
-            port: 4000
+          tcpSocket:
+            port: 9042
           initialDelaySeconds: 240
           periodSeconds: 30
         readinessProbe:
-          httpGet:
-            path: /glowroot
-            port: 4000
+          tcpSocket:
+            port: 9042
           initialDelaySeconds: 180
           periodSeconds: 15
       volumes:

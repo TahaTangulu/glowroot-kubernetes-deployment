@@ -80,7 +80,9 @@ check_namespace() {
             exit 0
         fi
     else
-        log_info "Namespace '$NAMESPACE' oluşturulacak."
+        log_info "Namespace '$NAMESPACE' oluşturuluyor..."
+        kubectl create namespace "$NAMESPACE"
+        log_success "Namespace oluşturuldu."
     fi
 }
 
@@ -90,7 +92,18 @@ setup_storage() {
     
     if [[ -f "$STORAGE_YAML" ]]; then
         log_info "K3s storage class uygulanıyor..."
-        kubectl apply -f "$STORAGE_YAML"
+        # Sadece storage class'ı uygula, PVC'yi sonra uygula
+        kubectl apply -f - <<EOF
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
+EOF
         log_success "Storage class uygulandı."
     else
         log_warning "Storage class YAML dosyası bulunamadı: $STORAGE_YAML"

@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: glowroot-ingress
+  namespace: glowroot-apm
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: glowroot.test.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: glowroot-web
+            port:
+              number: 4000 
