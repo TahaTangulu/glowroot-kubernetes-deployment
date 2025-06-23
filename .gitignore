@@ -1,0 +1,78 @@
+# Cursor IDE
+.cursor*
+
+# IDE ve Editörler
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Dosyaları
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Log Dosyaları
+*.log
+logs/
+/tmp/
+
+# Geçici Dosyalar
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Node.js (eğer kullanılırsa)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python (eğer kullanılırsa)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Java (eğer kullanılırsa)
+*.class
+*.jar
+target/
+build/
+
+# Docker
+.dockerignore
+
+# Kubernetes
+*.kubeconfig
+kubeconfig
+
+# Helm
+charts/
+*.tgz
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Ansible
+*.retry
+
+# Backup Dosyaları
+*.tar.gz
+*.zip
+*.rar
+
+# Özel Proje Dosyaları
+.env
+.env.local
+.env.production
+secrets/
+config.local.yaml 
