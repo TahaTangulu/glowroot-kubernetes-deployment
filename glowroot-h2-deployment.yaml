@@ -1,0 +1,190 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: glowroot-apm
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glowroot-config
+  namespace: glowroot-apm
+data:
+  glowroot.properties: |
+    # Glowroot Central Configuration (H2 Database)
+    # Database settings
+    db.type=h2
+    db.h2.dataDir=/opt/glowroot/data/h2
+    
+    # Web UI settings
+    web.bindAddress=0.0.0.0
+    web.port=4000
+    
+    # Collector settings
+    collector.bindAddress=0.0.0.0
+    collector.port=8181
+    
+    # Agent settings
+    agent.rollup.expirationHours=24
+    agent.rollup.cappedDatabaseSizeMb=500
+    
+    # UI settings
+    ui.defaultDisplayedPercentile=95
+    ui.defaultDisplayedPercentileForErrorRate=95
+    ui.defaultDisplayedPercentileForResponseTime=95
+    
+    # Advanced settings
+    advanced.weavingTimer=true
+    advanced.weavingTimerMarkAllTransactionEntries=true
+    advanced.weavingTimerMarkAllTransactionEntriesThresholdMillis=1000
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: glowroot-data-pvc
+  namespace: glowroot-apm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: glowroot-sa
+  namespace: glowroot-apm
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: glowroot
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: glowroot
+      component: app
+  template:
+    metadata:
+      labels:
+        app: glowroot
+        component: app
+    spec:
+      serviceAccountName: glowroot-sa
+      containers:
+      - name: glowroot
+        image: glowroot/glowroot-central:latest
+        ports:
+        - containerPort: 4000
+          name: web
+        - containerPort: 8181
+          name: collector
+        env:
+        - name: GLOWROOT_OPTS
+          value: "-Xms256m -Xmx512m -XX:+UseG1GC"
+        - name: JAVA_OPTS
+          value: "-Djava.security.egd=file:/dev/./urandom"
+        - name: DB_TYPE
+          value: "h2"
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: 250m
+        volumeMounts:
+        - name: glowroot-config
+          mountPath: /opt/glowroot/conf
+          readOnly: true
+        - name: glowroot-data
+          mountPath: /opt/glowroot/data
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 4000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 4000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: glowroot-config
+        configMap:
+          name: glowroot-config
+      - name: glowroot-data
+        persistentVolumeClaim:
+          claimName: glowroot-data-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glowroot-web
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: web
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4000
+    targetPort: 4000
+    protocol: TCP
+    name: web
+  selector:
+    app: glowroot
+    component: app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: glowroot-collector
+  namespace: glowroot-apm
+  labels:
+    app: glowroot
+    component: collector
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8181
+    targetPort: 8181
+    protocol: TCP
+    name: collector
+  selector:
+    app: glowroot
+    component: app
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: glowroot-ingress
+  namespace: glowroot-apm
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: glowroot.test.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: glowroot-web
+            port:
+              number: 4000 

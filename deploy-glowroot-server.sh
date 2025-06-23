@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Glowroot APM Server Deployment Script
+# Glowroot APM Server Deployment Script (Cassandra Destekli)
 # Bu script sunucuda direkt çalıştırılır ve Glowroot'u Kubernetes'e deploy eder
 
 set -euo pipefail
@@ -8,7 +8,9 @@ set -euo pipefail
 # Script konfigürasyonu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NAMESPACE="glowroot-apm"
-YAML_FILE="glowroot-kubernetes-deployment.yaml"
+YAML_FILE="glowroot-kubernetes-deployment-fixed.yaml"
+CASSANDRA_YAML="cassandra-deployment.yaml"
+STORAGE_YAML="k3s-storage-class.yaml"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="/tmp/glowroot_deploy_${TIMESTAMP}.log"
 
@@ -132,23 +134,115 @@ setup_namespace() {
     fi
 }
 
+# Storage class kurulumu
+setup_storage() {
+    log_info "Storage class kurulumu kontrol ediliyor..."
+    
+    if [[ -f "$STORAGE_YAML" ]]; then
+        log_info "K3s storage class uygulanıyor..."
+        kubectl apply -f "$STORAGE_YAML"
+        log_success "Storage class uygulandı."
+    else
+        log_warning "Storage class YAML dosyası bulunamadı: $STORAGE_YAML"
+        log_info "Varsayılan storage class kullanılacak."
+    fi
+}
+
+# Cassandra deployment
+deploy_cassandra() {
+    log_info "Cassandra deployment kontrol ediliyor..."
+    
+    if [[ ! -f "$CASSANDRA_YAML" ]]; then
+        log_error "Cassandra YAML dosyası bulunamadı: $CASSANDRA_YAML"
+        exit 1
+    fi
+    
+    # Mevcut Cassandra deployment'ını kontrol et
+    if kubectl get deployment cassandra -n "$NAMESPACE" &> /dev/null; then
+        log_warning "Cassandra deployment zaten mevcut."
+        read -p "Cassandra'yı yeniden deploy etmek istiyor musunuz? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Mevcut Cassandra deployment siliniyor..."
+            kubectl delete deployment cassandra -n "$NAMESPACE" --ignore-not-found=true
+            kubectl delete pvc cassandra-data-pvc -n "$NAMESPACE" --ignore-not-found=true
+        else
+            log_info "Mevcut Cassandra deployment kullanılacak."
+            return 0
+        fi
+    fi
+    
+    # Cassandra YAML syntax kontrolü
+    log_info "Cassandra YAML syntax kontrol ediliyor..."
+    if ! kubectl apply --dry-run=client -f "$CASSANDRA_YAML" &> /dev/null; then
+        log_error "Cassandra YAML dosyasında syntax hatası var."
+        exit 1
+    fi
+    
+    log_success "Cassandra YAML dosyası doğrulandı."
+    
+    # Cassandra'yı deploy et
+    log_info "Cassandra deploy ediliyor..."
+    kubectl apply -f "$CASSANDRA_YAML"
+    
+    # Cassandra'nın hazır olmasını bekle
+    log_info "Cassandra'nın hazır olması bekleniyor (maksimum 10 dakika)..."
+    if kubectl wait --for=condition=ready pod -l app=cassandra -n "$NAMESPACE" --timeout=600s; then
+        log_success "Cassandra hazır."
+    else
+        log_error "Cassandra hazır olmadı. Logları kontrol edin."
+        kubectl get pods -n "$NAMESPACE" -l app=cassandra
+        kubectl describe pods -l app=cassandra -n "$NAMESPACE"
+        exit 1
+    fi
+    
+    # Cassandra'nın tamamen başlamasını bekle
+    log_info "Cassandra servisinin tamamen başlaması bekleniyor..."
+    sleep 30
+    
+    # Cassandra keyspace'ini oluştur
+    log_info "Cassandra keyspace oluşturuluyor..."
+    kubectl exec -n "$NAMESPACE" deployment/cassandra -- cqlsh -e "CREATE KEYSPACE IF NOT EXISTS glowroot WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};" || {
+        log_warning "Keyspace oluşturulamadı, Cassandra henüz tam hazır olmayabilir."
+        log_info "Keyspace'i manuel olarak oluşturabilirsiniz:"
+        log_info "kubectl exec -n $NAMESPACE deployment/cassandra -- cqlsh -e \"CREATE KEYSPACE IF NOT EXISTS glowroot WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};\""
+    }
+    
+    log_success "Cassandra deployment tamamlandı."
+}
+
 # YAML dosyasını kontrol et ve uygula
 deploy_yaml() {
-    log_info "YAML dosyası kontrol ediliyor..."
+    log_info "Glowroot YAML dosyası kontrol ediliyor..."
     
     if [[ ! -f "$YAML_FILE" ]]; then
-        log_error "YAML dosyası bulunamadı: $YAML_FILE"
+        log_error "Glowroot YAML dosyası bulunamadı: $YAML_FILE"
         exit 1
+    fi
+    
+    # Mevcut Glowroot deployment'ını kontrol et
+    if kubectl get deployment glowroot -n "$NAMESPACE" &> /dev/null; then
+        log_warning "Glowroot deployment zaten mevcut."
+        read -p "Glowroot'u yeniden deploy etmek istiyor musunuz? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Mevcut Glowroot deployment siliniyor..."
+            kubectl delete deployment glowroot -n "$NAMESPACE" --ignore-not-found=true
+            kubectl delete pvc glowroot-data-pvc -n "$NAMESPACE" --ignore-not-found=true
+        else
+            log_info "Mevcut Glowroot deployment kullanılacak."
+            return 0
+        fi
     fi
     
     # YAML syntax kontrolü
-    log_info "YAML syntax kontrol ediliyor..."
+    log_info "Glowroot YAML syntax kontrol ediliyor..."
     if ! kubectl apply --dry-run=client -f "$YAML_FILE" &> /dev/null; then
-        log_error "YAML dosyasında syntax hatası var."
+        log_error "Glowroot YAML dosyasında syntax hatası var."
         exit 1
     fi
     
-    log_success "YAML dosyası doğrulandı."
+    log_success "Glowroot YAML dosyası doğrulandı."
     
     # YAML dosyasını uygula
     log_info "Glowroot APM deploy ediliyor..."
@@ -164,9 +258,9 @@ monitor_deployment() {
     # Pod'ların hazır olmasını bekle
     log_info "Pod'ların hazır olması bekleniyor (maksimum 5 dakika)..."
     if kubectl wait --for=condition=ready pod -l app=glowroot,component=app -n "$NAMESPACE" --timeout=300s; then
-        log_success "Pod'lar hazır."
+        log_success "Glowroot pod'ları hazır."
     else
-        log_error "Pod'lar hazır olmadı. Logları kontrol edin."
+        log_error "Glowroot pod'ları hazır olmadı. Logları kontrol edin."
         kubectl get pods -n "$NAMESPACE"
         kubectl describe pods -l app=glowroot -n "$NAMESPACE"
         exit 1
@@ -196,7 +290,7 @@ show_access_info() {
     INGRESS_IP=$(kubectl get ingress glowroot-ingress -n "$NAMESPACE" -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "Bekleniyor...")
     
     echo "=== Web Arayüzü ===" | tee -a "$LOG_FILE"
-    echo "URL: https://glowroot.test.local/glowroot" | tee -a "$LOG_FILE"
+    echo "URL: http://glowroot.test.local" | tee -a "$LOG_FILE"
     echo "Ingress IP: $INGRESS_IP" | tee -a "$LOG_FILE"
     echo "Namespace: $NAMESPACE" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
@@ -210,11 +304,17 @@ show_access_info() {
     echo | tee -a "$LOG_FILE"
     
     echo "=== Kullanışlı Komutlar ===" | tee -a "$LOG_FILE"
-    echo "Logları görüntüleme:" | tee -a "$LOG_FILE"
+    echo "Glowroot logları:" | tee -a "$LOG_FILE"
     echo "kubectl logs -f deployment/glowroot -n $NAMESPACE" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
-    echo "Pod'a bağlanma:" | tee -a "$LOG_FILE"
+    echo "Cassandra logları:" | tee -a "$LOG_FILE"
+    echo "kubectl logs -f deployment/cassandra -n $NAMESPACE" | tee -a "$LOG_FILE"
+    echo | tee -a "$LOG_FILE"
+    echo "Glowroot pod'una bağlanma:" | tee -a "$LOG_FILE"
     echo "kubectl exec -it \$(kubectl get pods -n $NAMESPACE -l app=glowroot -o jsonpath='{.items[0].metadata.name}') -n $NAMESPACE -- /bin/bash" | tee -a "$LOG_FILE"
+    echo | tee -a "$LOG_FILE"
+    echo "Cassandra pod'una bağlanma:" | tee -a "$LOG_FILE"
+    echo "kubectl exec -it \$(kubectl get pods -n $NAMESPACE -l app=cassandra -o jsonpath='{.items[0].metadata.name}') -n $NAMESPACE -- cqlsh" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
     echo "Resource kullanımı:" | tee -a "$LOG_FILE"
     echo "kubectl top pods -n $NAMESPACE" | tee -a "$LOG_FILE"
@@ -232,14 +332,24 @@ show_access_info() {
 health_check() {
     log_info "Health check yapılıyor..."
     
-    # Pod'ların çalışır durumda olduğunu kontrol et
-    RUNNING_PODS=$(kubectl get pods -n "$NAMESPACE" -l app=glowroot --field-selector=status.phase=Running --no-headers | wc -l)
-    TOTAL_PODS=$(kubectl get pods -n "$NAMESPACE" -l app=glowroot --no-headers | wc -l)
+    # Cassandra pod'larının çalışır durumda olduğunu kontrol et
+    CASSANDRA_RUNNING=$(kubectl get pods -n "$NAMESPACE" -l app=cassandra --field-selector=status.phase=Running --no-headers | wc -l)
+    CASSANDRA_TOTAL=$(kubectl get pods -n "$NAMESPACE" -l app=cassandra --no-headers | wc -l)
     
-    if [[ "$RUNNING_PODS" -eq "$TOTAL_PODS" && "$TOTAL_PODS" -gt 0 ]]; then
-        log_success "Tüm pod'lar çalışıyor ($RUNNING_PODS/$TOTAL_PODS)"
+    if [[ "$CASSANDRA_RUNNING" -eq "$CASSANDRA_TOTAL" && "$CASSANDRA_TOTAL" -gt 0 ]]; then
+        log_success "Cassandra pod'ları çalışıyor ($CASSANDRA_RUNNING/$CASSANDRA_TOTAL)"
     else
-        log_warning "Bazı pod'lar çalışmıyor ($RUNNING_PODS/$TOTAL_PODS)"
+        log_warning "Cassandra pod'ları çalışmıyor ($CASSANDRA_RUNNING/$CASSANDRA_TOTAL)"
+    fi
+    
+    # Glowroot pod'larının çalışır durumda olduğunu kontrol et
+    GLOWROOT_RUNNING=$(kubectl get pods -n "$NAMESPACE" -l app=glowroot --field-selector=status.phase=Running --no-headers | wc -l)
+    GLOWROOT_TOTAL=$(kubectl get pods -n "$NAMESPACE" -l app=glowroot --no-headers | wc -l)
+    
+    if [[ "$GLOWROOT_RUNNING" -eq "$GLOWROOT_TOTAL" && "$GLOWROOT_TOTAL" -gt 0 ]]; then
+        log_success "Glowroot pod'ları çalışıyor ($GLOWROOT_RUNNING/$GLOWROOT_TOTAL)"
+    else
+        log_warning "Glowroot pod'ları çalışmıyor ($GLOWROOT_RUNNING/$GLOWROOT_TOTAL)"
     fi
     
     # Service'lerin endpoint'lerini kontrol et
@@ -248,7 +358,7 @@ health_check() {
 
 # Ana fonksiyon
 main() {
-    log_info "=== GLOWROOT APM SERVER DEPLOYMENT BAŞLATILIYOR ==="
+    log_info "=== GLOWROOT APM SERVER DEPLOYMENT BAŞLATILIYOR (CASSANDRA DESTEKLİ) ==="
     log_info "Tarih: $(date)"
     log_info "Log dosyası: $LOG_FILE"
     echo
@@ -256,6 +366,8 @@ main() {
     check_system_info
     check_prerequisites
     setup_namespace
+    setup_storage
+    deploy_cassandra
     deploy_yaml
     monitor_deployment
     health_check
@@ -266,8 +378,9 @@ main() {
     log_info "Önemli Notlar:"
     log_info "1. DNS ayarlarınızı yapılandırmayı unutmayın"
     log_info "2. Firewall ayarlarını kontrol edin"
-    log_info "3. SSL sertifikası için cert-manager kurulu olmalı"
+    log_info "3. Cassandra ve Glowroot birlikte çalışıyor"
     log_info "4. Detaylı loglar: $LOG_FILE"
+    log_info "5. Cassandra keyspace'i otomatik oluşturuldu"
 }
 
 # Script'i çalıştır

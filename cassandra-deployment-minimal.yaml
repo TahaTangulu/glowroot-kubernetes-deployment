@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cassandra
+  namespace: glowroot-apm
+  labels:
+    app: cassandra
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cassandra
+  template:
+    metadata:
+      labels:
+        app: cassandra
+    spec:
+      containers:
+      - name: cassandra
+        image: cassandra:3.11
+        ports:
+        - containerPort: 9042
+          name: cql
+        env:
+        - name: CASSANDRA_START_RPC
+          value: "true"
+        - name: CASSANDRA_CLUSTER_NAME
+          value: "GlowrootCluster"
+        - name: CASSANDRA_DC
+          value: "datacenter1"
+        - name: CASSANDRA_RACK
+          value: "rack1"
+        - name: CASSANDRA_ENDPOINT_SNITCH
+          value: "SimpleSnitch"
+        - name: CASSANDRA_SEEDS
+          value: "cassandra"
+        - name: CASSANDRA_HEAP_SIZE
+          value: "128M"
+        - name: CASSANDRA_MAX_HEAP_SIZE
+          value: "256M"
+        - name: CASSANDRA_HEAP_NEWSIZE
+          value: "32M"
+        - name: CASSANDRA_JMX_PORT
+          value: "7199"
+        - name: CASSANDRA_JMX_HOSTNAME
+          value: "localhost"
+        - name: CASSANDRA_MEMTABLE_FLUSH_WRITERS
+          value: "1"
+        - name: CASSANDRA_CONCURRENT_READS
+          value: "2"
+        - name: CASSANDRA_CONCURRENT_WRITES
+          value: "2"
+        - name: CASSANDRA_CONCURRENT_COUNTER_WRITES
+          value: "2"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "250m"
+        volumeMounts:
+        - name: cassandra-data
+          mountPath: /var/lib/cassandra
+        readinessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "cqlsh -e 'describe keyspaces'"
+          initialDelaySeconds: 120
+          periodSeconds: 20
+          timeoutSeconds: 15
+          failureThreshold: 8
+        livenessProbe:
+          exec:
+            command:
+            - /bin/bash
+            - -c
+            - "cqlsh -e 'describe keyspaces'"
+          initialDelaySeconds: 180
+          periodSeconds: 45
+          timeoutSeconds: 20
+          failureThreshold: 5
+      volumes:
+      - name: cassandra-data
+        persistentVolumeClaim:
+          claimName: cassandra-data-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cassandra-data-pvc
+  namespace: glowroot-apm
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cassandra
+  namespace: glowroot-apm
+  labels:
+    app: cassandra
+spec:
+  ports:
+  - port: 9042
+    targetPort: 9042
+    name: cql
+  selector:
+    app: cassandra
+  clusterIP: None 

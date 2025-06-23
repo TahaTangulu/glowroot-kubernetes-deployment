@@ -168,7 +168,7 @@ spec:
       serviceAccountName: glowroot-sa
       containers:
       - name: glowroot
-        image: glowroot/glowroot-central:latest
+        image: glowroot/glowroot-central:0.14.4
         imagePullPolicy: Always
         ports:
         - containerPort: 4000

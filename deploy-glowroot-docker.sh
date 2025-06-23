@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Glowroot APM Docker Deployment Script
+# Glowroot APM Docker Deployment Script (Cassandra Destekli)
 # Bu script Docker ortamında Glowroot'u çalıştırır
 
 set -euo pipefail
@@ -8,15 +8,19 @@ set -euo pipefail
 # Script konfigürasyonu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER_NAME="glowroot-apm"
+CASSANDRA_CONTAINER="cassandra-db"
 IMAGE_NAME="glowroot/glowroot-central:latest"
+CASSANDRA_IMAGE="cassandra:3.11"
 NETWORK_NAME="glowroot-network"
 VOLUME_NAME="glowroot-data"
+CASSANDRA_VOLUME="cassandra-data"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="/tmp/glowroot_docker_${TIMESTAMP}.log"
 
 # Port konfigürasyonu
 WEB_PORT="4000"
 COLLECTOR_PORT="8181"
+CASSANDRA_PORT="9042"
 
 # Renk kodları
 RED='\033[0;31m'
@@ -82,8 +86,8 @@ check_system_info() {
     DISK_GB=$(df -BG / | awk 'NR==2{print $4}' | sed 's/G//')
     log_info "Disk alanı: ${DISK_GB}GB available"
     
-    if [[ "$DISK_GB" -lt 5 ]]; then
-        log_warning "Disk alanı az (${DISK_GB}GB). En az 5GB önerilir."
+    if [[ "$DISK_GB" -lt 10 ]]; then
+        log_warning "Disk alanı az (${DISK_GB}GB). En az 10GB önerilir (Cassandra için)."
     fi
 }
 
@@ -130,58 +134,153 @@ setup_docker_network() {
     fi
 }
 
-# Docker volume oluştur
-setup_docker_volume() {
-    log_info "Docker volume kontrol ediliyor..."
+# Docker volume'ları oluştur
+setup_docker_volumes() {
+    log_info "Docker volume'ları kontrol ediliyor..."
     
+    # Glowroot volume
     if ! docker volume ls | grep -q "$VOLUME_NAME"; then
-        log_info "Docker volume oluşturuluyor: $VOLUME_NAME"
+        log_info "Glowroot volume oluşturuluyor: $VOLUME_NAME"
         docker volume create "$VOLUME_NAME"
-        log_success "Volume oluşturuldu."
+        log_success "Glowroot volume oluşturuldu."
     else
-        log_info "Volume zaten mevcut: $VOLUME_NAME"
+        log_info "Glowroot volume zaten mevcut: $VOLUME_NAME"
+    fi
+    
+    # Cassandra volume
+    if ! docker volume ls | grep -q "$CASSANDRA_VOLUME"; then
+        log_info "Cassandra volume oluşturuluyor: $CASSANDRA_VOLUME"
+        docker volume create "$CASSANDRA_VOLUME"
+        log_success "Cassandra volume oluşturuldu."
+    else
+        log_info "Cassandra volume zaten mevcut: $CASSANDRA_VOLUME"
     fi
 }
 
-# Glowroot image'ını çek
-pull_glowroot_image() {
-    log_info "Glowroot image'ı kontrol ediliyor..."
+# Image'ları çek
+pull_images() {
+    log_info "Docker image'ları kontrol ediliyor..."
     
+    # Glowroot image
     if ! docker images | grep -q "glowroot/glowroot-central"; then
         log_info "Glowroot image'ı çekiliyor..."
         docker pull "$IMAGE_NAME"
-        log_success "Image çekildi."
+        log_success "Glowroot image çekildi."
     else
-        log_info "Image zaten mevcut. Güncelleme kontrol ediliyor..."
+        log_info "Glowroot image zaten mevcut. Güncelleme kontrol ediliyor..."
         docker pull "$IMAGE_NAME"
-        log_success "Image güncel."
+        log_success "Glowroot image güncel."
+    fi
+    
+    # Cassandra image
+    if ! docker images | grep -q "cassandra:3.11"; then
+        log_info "Cassandra image'ı çekiliyor..."
+        docker pull "$CASSANDRA_IMAGE"
+        log_success "Cassandra image çekildi."
+    else
+        log_info "Cassandra image zaten mevcut. Güncelleme kontrol ediliyor..."
+        docker pull "$CASSANDRA_IMAGE"
+        log_success "Cassandra image güncel."
     fi
 }
 
-# Mevcut container'ı kontrol et ve durdur
-check_existing_container() {
-    log_info "Mevcut container kontrol ediliyor..."
+# Mevcut container'ları kontrol et ve durdur
+check_existing_containers() {
+    log_info "Mevcut container'lar kontrol ediliyor..."
     
-    if docker ps -a | grep -q "$CONTAINER_NAME"; then
-        log_warning "Container '$CONTAINER_NAME' zaten mevcut."
+    # Cassandra container kontrolü
+    if docker ps -a | grep -q "$CASSANDRA_CONTAINER"; then
+        log_warning "Cassandra container '$CASSANDRA_CONTAINER' zaten mevcut."
         
-        # Container çalışıyor mu kontrol et
+        if docker ps | grep -q "$CASSANDRA_CONTAINER"; then
+            log_info "Cassandra container çalışıyor. Durduruluyor..."
+            docker stop "$CASSANDRA_CONTAINER"
+        fi
+        
+        read -p "Mevcut Cassandra container'ı silmek istiyor musunuz? (y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            log_info "Cassandra container siliniyor..."
+            docker rm "$CASSANDRA_CONTAINER"
+            log_success "Cassandra container silindi."
+        else
+            log_info "Mevcut Cassandra container korunuyor."
+        fi
+    fi
+    
+    # Glowroot container kontrolü
+    if docker ps -a | grep -q "$CONTAINER_NAME"; then
+        log_warning "Glowroot container '$CONTAINER_NAME' zaten mevcut."
+        
         if docker ps | grep -q "$CONTAINER_NAME"; then
-            log_info "Container çalışıyor. Durduruluyor..."
+            log_info "Glowroot container çalışıyor. Durduruluyor..."
             docker stop "$CONTAINER_NAME"
         fi
         
-        read -p "Mevcut container'ı silmek istiyor musunuz? (y/N): " -n 1 -r
+        read -p "Mevcut Glowroot container'ı silmek istiyor musunuz? (y/N): " -n 1 -r
         echo
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            log_info "Container siliniyor..."
+            log_info "Glowroot container siliniyor..."
             docker rm "$CONTAINER_NAME"
-            log_success "Container silindi."
+            log_success "Glowroot container silindi."
         else
-            log_info "Mevcut container korunuyor."
-            return 0
+            log_info "Mevcut Glowroot container korunuyor."
         fi
     fi
+}
+
+# Cassandra container'ını başlat
+start_cassandra_container() {
+    log_info "Cassandra container'ı başlatılıyor..."
+    
+    # Cassandra container'ını başlat
+    docker run -d \
+        --name "$CASSANDRA_CONTAINER" \
+        --network "$NETWORK_NAME" \
+        -p "$CASSANDRA_PORT:9042" \
+        -v "$CASSANDRA_VOLUME:/var/lib/cassandra" \
+        -e CASSANDRA_START_RPC=true \
+        -e CASSANDRA_CLUSTER_NAME=GlowrootCluster \
+        -e CASSANDRA_DC=datacenter1 \
+        -e CASSANDRA_RACK=rack1 \
+        -e CASSANDRA_ENDPOINT_SNITCH=SimpleSnitch \
+        -e CASSANDRA_SEEDS=cassandra-db \
+        --restart unless-stopped \
+        "$CASSANDRA_IMAGE"
+    
+    log_success "Cassandra container başlatıldı."
+    
+    # Cassandra'nın hazır olmasını bekle
+    log_info "Cassandra'nın hazır olması bekleniyor (maksimum 5 dakika)..."
+    local timeout=300
+    local elapsed=0
+    
+    while [[ $elapsed -lt $timeout ]]; do
+        if docker exec "$CASSANDRA_CONTAINER" cqlsh -e "describe keyspaces" &> /dev/null; then
+            log_success "Cassandra hazır."
+            break
+        fi
+        
+        sleep 10
+        elapsed=$((elapsed + 10))
+        log_info "Cassandra başlatılıyor... ($elapsed/$timeout saniye)"
+    done
+    
+    if [[ $elapsed -ge $timeout ]]; then
+        log_error "Cassandra hazır olmadı. Logları kontrol edin."
+        docker logs "$CASSANDRA_CONTAINER"
+        exit 1
+    fi
+    
+    # Cassandra keyspace'ini oluştur
+    log_info "Cassandra keyspace oluşturuluyor..."
+    docker exec "$CASSANDRA_CONTAINER" cqlsh -e "CREATE KEYSPACE IF NOT EXISTS glowroot WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};" || {
+        log_warning "Keyspace oluşturulamadı, Cassandra henüz tam hazır olmayabilir."
+        log_info "Keyspace'i manuel olarak oluşturabilirsiniz:"
+        log_info "docker exec $CASSANDRA_CONTAINER cqlsh -e \"CREATE KEYSPACE IF NOT EXISTS glowroot WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};\""
+    }
+    
+    log_success "Cassandra deployment tamamlandı."
 }
 
 # Glowroot container'ını başlat
@@ -197,156 +296,134 @@ start_glowroot_container() {
         -v "$VOLUME_NAME:/opt/glowroot/data" \
         -e GLOWROOT_OPTS="-Xms512m -Xmx1g -XX:+UseG1GC" \
         -e JAVA_OPTS="-Djava.security.egd=file:/dev/./urandom" \
+        -e CASSANDRA_CONTACT_POINTS="$CASSANDRA_CONTAINER" \
+        -e CASSANDRA_PORT="9042" \
+        -e CASSANDRA_KEYSPACE="glowroot" \
         --restart unless-stopped \
         "$IMAGE_NAME"
     
-    log_success "Container başlatıldı."
+    log_success "Glowroot container başlatıldı."
+    
+    # Glowroot'un hazır olmasını bekle
+    log_info "Glowroot'un hazır olması bekleniyor (maksimum 3 dakika)..."
+    local timeout=180
+    local elapsed=0
+    
+    while [[ $elapsed -lt $timeout ]]; do
+        if curl -s "http://localhost:$WEB_PORT" &> /dev/null; then
+            log_success "Glowroot hazır."
+            break
+        fi
+        
+        sleep 10
+        elapsed=$((elapsed + 10))
+        log_info "Glowroot başlatılıyor... ($elapsed/$timeout saniye)"
+    done
+    
+    if [[ $elapsed -ge $timeout ]]; then
+        log_error "Glowroot hazır olmadı. Logları kontrol edin."
+        docker logs "$CONTAINER_NAME"
+        exit 1
+    fi
 }
 
 # Container durumunu kontrol et
 check_container_status() {
-    log_info "Container durumu kontrol ediliyor..."
+    log_info "Container durumları kontrol ediliyor..."
     
-    # Container'ın başlamasını bekle
-    log_info "Container'ın başlaması bekleniyor (maksimum 2 dakika)..."
+    # Cassandra durumu
+    if docker ps | grep -q "$CASSANDRA_CONTAINER"; then
+        log_success "Cassandra container çalışıyor."
+    else
+        log_error "Cassandra container çalışmıyor."
+        docker logs "$CASSANDRA_CONTAINER"
+        exit 1
+    fi
     
-    for i in {1..24}; do
-        if docker ps | grep -q "$CONTAINER_NAME"; then
-            log_success "Container çalışıyor."
-            break
-        fi
-        
-        if [[ $i -eq 24 ]]; then
-            log_error "Container başlatılamadı."
-            docker logs "$CONTAINER_NAME"
-            exit 1
-        fi
-        
-        log_info "Bekleniyor... ($i/24)"
-        sleep 5
-    done
+    # Glowroot durumu
+    if docker ps | grep -q "$CONTAINER_NAME"; then
+        log_success "Glowroot container çalışıyor."
+    else
+        log_error "Glowroot container çalışmıyor."
+        docker logs "$CONTAINER_NAME"
+        exit 1
+    fi
     
-    # Container loglarını kontrol et
-    log_info "Container logları kontrol ediliyor..."
-    docker logs "$CONTAINER_NAME" | tail -20 | tee -a "$LOG_FILE"
+    # Port durumları
+    log_info "Port durumları kontrol ediliyor..."
+    if netstat -tuln | grep -q ":$WEB_PORT "; then
+        log_success "Web port ($WEB_PORT) açık."
+    else
+        log_warning "Web port ($WEB_PORT) açık değil."
+    fi
+    
+    if netstat -tuln | grep -q ":$COLLECTOR_PORT "; then
+        log_success "Collector port ($COLLECTOR_PORT) açık."
+    else
+        log_warning "Collector port ($COLLECTOR_PORT) açık değil."
+    fi
+    
+    if netstat -tuln | grep -q ":$CASSANDRA_PORT "; then
+        log_success "Cassandra port ($CASSANDRA_PORT) açık."
+    else
+        log_warning "Cassandra port ($CASSANDRA_PORT) açık değil."
+    fi
 }
 
 # Erişim bilgilerini göster
 show_access_info() {
-    log_info "=== GLOWROOT DOCKER ERİŞİM BİLGİLERİ ===" | tee -a "$LOG_FILE"
+    log_info "=== DOCKER GLOWROOT ERİŞİM BİLGİLERİ ===" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
     
-    # Container IP'sini al
-    CONTAINER_IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$CONTAINER_NAME")
+    # IP adresini al
+    HOST_IP=$(hostname -I | awk '{print $1}')
     
     echo "=== Web Arayüzü ===" | tee -a "$LOG_FILE"
-    echo "URL: http://localhost:$WEB_PORT/glowroot" | tee -a "$LOG_FILE"
-    echo "Container IP: $CONTAINER_IP" | tee -a "$LOG_FILE"
-    echo "Container Name: $CONTAINER_NAME" | tee -a "$LOG_FILE"
+    echo "URL: http://$HOST_IP:$WEB_PORT" | tee -a "$LOG_FILE"
+    echo "Local: http://localhost:$WEB_PORT" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
     
-    echo "=== Collector API ===" | tee -a "$LOG_FILE"
-    echo "URL: http://localhost:$COLLECTOR_PORT" | tee -a "$LOG_FILE"
-    echo "Container URL: http://$CONTAINER_IP:8181" | tee -a "$LOG_FILE"
+    echo "=== Collector Endpoint ===" | tee -a "$LOG_FILE"
+    echo "URL: http://$HOST_IP:$COLLECTOR_PORT" | tee -a "$LOG_FILE"
+    echo "Local: http://localhost:$COLLECTOR_PORT" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
     
-    echo "=== Container Durumu ===" | tee -a "$LOG_FILE"
-    docker ps | grep "$CONTAINER_NAME" | tee -a "$LOG_FILE"
+    echo "=== Cassandra Endpoint ===" | tee -a "$LOG_FILE"
+    echo "Host: $HOST_IP" | tee -a "$LOG_FILE"
+    echo "Port: $CASSANDRA_PORT" | tee -a "$LOG_FILE"
+    echo "Keyspace: glowroot" | tee -a "$LOG_FILE"
+    echo | tee -a "$LOG_FILE"
+    
+    echo "=== Container Bilgileri ===" | tee -a "$LOG_FILE"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
     
     echo "=== Kullanışlı Komutlar ===" | tee -a "$LOG_FILE"
-    echo "Container logları:" | tee -a "$LOG_FILE"
+    echo "Glowroot logları:" | tee -a "$LOG_FILE"
     echo "docker logs -f $CONTAINER_NAME" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
-    echo "Container'a bağlanma:" | tee -a "$LOG_FILE"
+    echo "Cassandra logları:" | tee -a "$LOG_FILE"
+    echo "docker logs -f $CASSANDRA_CONTAINER" | tee -a "$LOG_FILE"
+    echo | tee -a "$LOG_FILE"
+    echo "Glowroot container'a bağlanma:" | tee -a "$LOG_FILE"
     echo "docker exec -it $CONTAINER_NAME /bin/bash" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
-    echo "Container durdurma:" | tee -a "$LOG_FILE"
-    echo "docker stop $CONTAINER_NAME" | tee -a "$LOG_FILE"
+    echo "Cassandra container'a bağlanma:" | tee -a "$LOG_FILE"
+    echo "docker exec -it $CASSANDRA_CONTAINER cqlsh" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
-    echo "Container başlatma:" | tee -a "$LOG_FILE"
-    echo "docker start $CONTAINER_NAME" | tee -a "$LOG_FILE"
+    echo "Container'ları durdurma:" | tee -a "$LOG_FILE"
+    echo "docker stop $CONTAINER_NAME $CASSANDRA_CONTAINER" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
-    echo "Container silme:" | tee -a "$LOG_FILE"
-    echo "docker rm -f $CONTAINER_NAME" | tee -a "$LOG_FILE"
-    echo | tee -a "$LOG_FILE"
-    
-    echo "=== Java Uygulamasına Agent Ekleme ===" | tee -a "$LOG_FILE"
-    echo "java -javaagent:/path/to/glowroot.jar \\" | tee -a "$LOG_FILE"
-    echo "     -Dglowroot.collector.host=localhost \\" | tee -a "$LOG_FILE"
-    echo "     -Dglowroot.collector.port=$COLLECTOR_PORT \\" | tee -a "$LOG_FILE"
-    echo "     -jar your-application.jar" | tee -a "$LOG_FILE"
+    echo "Container'ları başlatma:" | tee -a "$LOG_FILE"
+    echo "docker start $CASSANDRA_CONTAINER $CONTAINER_NAME" | tee -a "$LOG_FILE"
     echo | tee -a "$LOG_FILE"
     
     echo "Log dosyası: $LOG_FILE" | tee -a "$LOG_FILE"
 }
 
-# Health check
-health_check() {
-    log_info "Health check yapılıyor..."
-    
-    # Container'ın çalışır durumda olduğunu kontrol et
-    if docker ps | grep -q "$CONTAINER_NAME"; then
-        log_success "Container çalışıyor."
-        
-        # Web port'unu kontrol et
-        if curl -s http://localhost:$WEB_PORT/glowroot &> /dev/null; then
-            log_success "Web arayüzü erişilebilir."
-        else
-            log_warning "Web arayüzü henüz hazır değil."
-        fi
-        
-        # Collector port'unu kontrol et
-        if curl -s http://localhost:$COLLECTOR_PORT &> /dev/null; then
-            log_success "Collector API erişilebilir."
-        else
-            log_warning "Collector API henüz hazır değil."
-        fi
-    else
-        log_error "Container çalışmıyor."
-        exit 1
-    fi
-}
-
-# Docker Compose dosyası oluştur (opsiyonel)
-create_docker_compose() {
-    log_info "Docker Compose dosyası oluşturuluyor..."
-    
-    cat > docker-compose.yml << EOF
-version: '3.8'
-
-services:
-  glowroot:
-    image: glowroot/glowroot-central:latest
-    container_name: $CONTAINER_NAME
-    ports:
-      - "$WEB_PORT:4000"
-      - "$COLLECTOR_PORT:8181"
-    volumes:
-      - $VOLUME_NAME:/opt/glowroot/data
-    environment:
-      - GLOWROOT_OPTS=-Xms512m -Xmx1g -XX:+UseG1GC
-      - JAVA_OPTS=-Djava.security.egd=file:/dev/./urandom
-    restart: unless-stopped
-    networks:
-      - glowroot-network
-
-volumes:
-  $VOLUME_NAME:
-    external: true
-
-networks:
-  glowroot-network:
-    external: true
-EOF
-    
-    log_success "Docker Compose dosyası oluşturuldu: docker-compose.yml"
-    log_info "Kullanım: docker-compose up -d"
-}
-
 # Ana fonksiyon
 main() {
-    log_info "=== GLOWROOT APM DOCKER DEPLOYMENT BAŞLATILIYOR ==="
+    log_info "=== DOCKER GLOWROOT APM DEPLOYMENT BAŞLATILIYOR (CASSANDRA DESTEKLİ) ==="
     log_info "Tarih: $(date)"
     log_info "Log dosyası: $LOG_FILE"
     echo
@@ -354,23 +431,22 @@ main() {
     check_system_info
     check_docker_service
     setup_docker_network
-    setup_docker_volume
-    pull_glowroot_image
-    check_existing_container
+    setup_docker_volumes
+    pull_images
+    check_existing_containers
+    start_cassandra_container
     start_glowroot_container
     check_container_status
-    health_check
     show_access_info
-    create_docker_compose
     
-    log_success "=== GLOWROOT APM DOCKER BAŞARIYLA DEPLOY EDİLDİ! ==="
+    log_success "=== DOCKER GLOWROOT APM BAŞARIYLA DEPLOY EDİLDİ! ==="
     echo
     log_info "Önemli Notlar:"
-    log_info "1. Web arayüzü: http://localhost:$WEB_PORT/glowroot"
-    log_info "2. Collector API: http://localhost:$COLLECTOR_PORT"
-    log_info "3. Veriler $VOLUME_NAME volume'unda saklanıyor"
+    log_info "1. Cassandra ve Glowroot birlikte çalışıyor"
+    log_info "2. Container'lar otomatik olarak yeniden başlatılacak"
+    log_info "3. Veriler Docker volume'larında saklanıyor"
     log_info "4. Detaylı loglar: $LOG_FILE"
-    log_info "5. Docker Compose dosyası oluşturuldu"
+    log_info "5. Cassandra keyspace'i otomatik oluşturuldu"
 }
 
 # Script'i çalıştır
